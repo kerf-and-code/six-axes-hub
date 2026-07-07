@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Six Axes - Beyond20 Tap (spike)</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #16121f; color: #e8e2f0; margin: 0; padding: 24px; }
+  h1 { font-size: 20px; margin: 0 0 4px; color: #c8a24b; }
+  .sub { color: #9a8fb0; font-size: 13px; margin-bottom: 16px; }
+  #status { padding: 10px 14px; border-radius: 8px; background: #2a2438; margin-bottom: 16px; font-size: 14px; }
+  #status.ok { background: #1d3324; color: #9fe0ae; }
+  .bar { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; }
+  button { background: #c8a24b; color: #1a1626; border: 0; padding: 8px 14px; border-radius: 8px; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  #count { color: #9a8fb0; font-size: 13px; }
+  .evt { background: #221c31; border: 1px solid #37304a; border-radius: 10px; padding: 10px 14px; margin-bottom: 10px; }
+  .evt .head { display: flex; gap: 10px; flex-wrap: wrap; align-items: baseline; }
+  .kind { font-weight: 700; color: #c8a24b; }
+  .who { color: #b7aed1; }
+  .what { color: #e8e2f0; }
+  .total { font-weight: 700; font-size: 16px; }
+  .crit { color: #7fe08f; font-weight: 700; }
+  .fumble { color: #e07f7f; font-weight: 700; }
+  .time { color: #776d90; font-size: 12px; margin-left: auto; }
+  details { margin-top: 6px; }
+  summary { cursor: pointer; color: #9a8fb0; font-size: 12px; }
+  pre { white-space: pre-wrap; word-break: break-all; font-size: 11px; color: #cfc6e4; background: #1a1526; padding: 8px; border-radius: 6px; max-height: 240px; overflow: auto; }
+</style>
+</head>
+<body>
+<h1>Six Axes - Beyond20 Tap</h1>
+<div class="sub">Spike tool: listens for Beyond20 DOM events and logs every payload. Keep this tab open, roll on D&D Beyond, then download the captured JSON.</div>
+<div id="status">Waiting for Beyond20... (this page's domain must be in Beyond20's Custom Domains list; reload after adding it)</div>
+<div class="bar">
+  <button id="dl" disabled>Download captured events (JSON)</button>
+  <button id="clear">Clear</button>
+  <span id="count">0 events</span>
+</div>
+<div id="log"></div>
+
+<script>
+  const captured = [];
+  const log = document.getElementById("log");
+  const statusEl = document.getElementById("status");
+  const countEl = document.getElementById("count");
+  const dlBtn = document.getElementById("dl");
+
+  function addBeyond20EventListener(name, callback) {
+    document.addEventListener("Beyond20_" + name, (evt) => {
+      const detail = evt.detail || [];
+      callback(...detail);
+    }, false);
+  }
+
+  function record(kind, args) {
+    const entry = { kind, receivedAt: new Date().toISOString(), args };
+    captured.push(entry);
+    countEl.textContent = captured.length + " events";
+    dlBtn.disabled = false;
+    render(entry);
+  }
+
+  function esc(s) {
+    return String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  }
+
+  function summarize(kind, args) {
+    const req = args && args[0];
+    if (kind === "RenderedRoll" && req) {
+      const who = req.character && req.character.name;
+      const what = req.name || req.type || "";
+      let total = "";
+      let flags = "";
+      const rolls = [];
+      if (Array.isArray(req.attributes)) { /* noop */ }
+      const collect = (r) => { if (r && typeof r === "object" && "total" in r) rolls.push(r); };
+      collect(req.roll);
+      if (Array.isArray(req.rolls)) req.rolls.forEach(collect);
+      if (req["attack-rolls"]) req["attack-rolls"].forEach(collect);
+      if (req["damage-rolls"]) req["damage-rolls"].forEach(p => collect(Array.isArray(p) ? p[1] : p));
+      if (rolls.length) {
+        const first = rolls.find(r => !r.discarded) || rolls[0];
+        total = first.total;
+        if (first["critical-success"]) flags = "crit";
+        else if (first["critical-failure"]) flags = "fumble";
+      }
+      return { who, what: (req.type ? req.type + ": " : "") + what, total, flags };
+    }
+    if (kind === "UpdateHP" && args) {
+      return { who: args[1], what: "HP " + args[2] + "/" + args[3] + (args[4] ? " (+" + args[4] + " temp)" : ""), total: "", flags: "" };
+    }
+    if (kind === "UpdateConditions" && args) {
+      const conds = Array.isArray(args[2]) ? args[2].join(", ") : args[2];
+      return { who: args[1], what: "Conditions: " + (conds || "none") + (args[3] ? " | exhaustion " + args[3] : ""), total: "", flags: "" };
+    }
+    if (kind === "UpdateCombat") {
+      return { who: "", what: "Turn tracker updated", total: "", flags: "" };
+    }
+    return { who: "", what: "", total: "", flags: "" };
+  }
+
+  function render(entry) {
+    const s = summarize(entry.kind, entry.args);
+    const div = document.createElement("div");
+    div.className = "evt";
+    div.innerHTML =
+      '<div class="head">' +
+      '<span class="kind">' + esc(entry.kind) + "</span>" +
+      (s.who ? '<span class="who">' + esc(s.who) + "</span>" : "") +
+      (s.what ? '<span class="what">' + esc(s.what) + "</span>" : "") +
+      (s.total !== "" ? '<span class="total">= ' + esc(s.total) + "</span>" : "") +
+      (s.flags ? '<span class="' + s.flags + '">' + s.flags.toUpperCase() + "</span>" : "") +
+      '<span class="time">' + entry.receivedAt.slice(11, 19) + "</span>" +
+      "</div>" +
+      "<details><summary>raw payload</summary><pre>" + esc(JSON.stringify(entry.args, null, 2)) + "</pre></details>";
+    log.prepend(div);
+  }
+
+  addBeyond20EventListener("Loaded", (settings) => {
+    statusEl.textContent = "Beyond20 connected. Roll on D&D Beyond and events will appear here.";
+    statusEl.className = "ok";
+    record("Loaded", [{ note: "settings payload omitted from display", keys: Object.keys(settings || {}) }]);
+  });
+  addBeyond20EventListener("NewSettings", () => {});
+  addBeyond20EventListener("RenderedRoll", (request) => record("RenderedRoll", [request]));
+  addBeyond20EventListener("UpdateHP", (...args) => record("UpdateHP", args));
+  addBeyond20EventListener("UpdateConditions", (...args) => record("UpdateConditions", args));
+  addBeyond20EventListener("UpdateCombat", (request) => record("UpdateCombat", [{ note: "combat payload", request }]));
+
+  document.getElementById("dl").addEventListener("click", () => {
+    const blob = new Blob([JSON.stringify(captured, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "beyond20-capture-" + Date.now() + ".json";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+  document.getElementById("clear").addEventListener("click", () => {
+    captured.length = 0;
+    log.innerHTML = "";
+    countEl.textContent = "0 events";
+    dlBtn.disabled = true;
+  });
+</script>
+</body>
+</html>
