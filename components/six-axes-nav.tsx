@@ -42,6 +42,8 @@ const GROUPS: Group[] = [
     { href: "/me/campaigns", label: "Campaigns" },
     { href: "/me/characters", label: "Characters" },
     { href: "/me/threads", label: "Threads" },
+    { href: "/me/codex", label: "Codex" },
+    { href: "/me/settings", label: "Settings" },
   ] },
   { label: "Profile", href: "/play" },
   { label: "Help", href: "/gm/help" },
