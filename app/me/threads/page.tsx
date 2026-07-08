@@ -36,6 +36,7 @@ export default function MyThreadsPage() {
   const [threads, setThreads] = useState<Thread[]>([]);
   const [chars, setChars] = useState<Character[]>([]);
   const [status, setStatus] = useState<"loading" | "ready" | "signed_out" | "error">("loading");
+  const [userId, setUserId] = useState<string | null>(null);
 
   // new-thread form
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
@@ -50,6 +51,7 @@ export default function MyThreadsPage() {
     (async () => {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) { if (active) setStatus("signed_out"); return; }
+      setUserId(user.id);
       const [{ data: t, error: tErr }, { data: cs }] = await Promise.all([
         supabase.from("threads").select("*").order("created_at", { ascending: false }),
         supabase.rpc("my_characters"),
@@ -77,13 +79,14 @@ export default function MyThreadsPage() {
     if (!draft.title.trim() || saving) return;
     setSaving(true);
     const row = {
+      profile_id: userId,
       title: draft.title.trim(),
       detail: draft.detail.trim() || null,
       kind: draft.kind,
       campaign_id: draft.campaignId || null,
       character_id: draft.characterId || null,
     };
-    // profile_id is filled by the column default (auth.uid()) and enforced by RLS.
+    // profile_id is sent explicitly (= auth.uid()) so the RLS with-check passes.
     const { data, error } = await supabase.from("threads").insert(row).select("*").single();
     setSaving(false);
     if (error) return;
