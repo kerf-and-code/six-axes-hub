@@ -167,6 +167,11 @@ export default function TableTap({ shareCode }: { shareCode: string }) {
   const [linking, setLinking] = useState<string | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
   const [feed, setFeed] = useState<{ line: string; fidelity: string; at: string }[]>([]);
+  const [origin, setOrigin] = useState("");
+
+  useEffect(() => {
+    if (typeof window !== "undefined") setOrigin(window.location.origin);
+  }, []);
 
   const queueRef = useRef<TapEvent[]>([]);
   const flushingRef = useRef(false);
@@ -387,7 +392,7 @@ export default function TableTap({ shareCode }: { shareCode: string }) {
       {b20 === "waiting" && (
         <div style={{ background: "#221c31", border: "1px solid #37304a", borderRadius: 10, padding: 14, fontSize: 14, marginBottom: 12 }}>
           <b style={{ color: BRASS }}>One-time setup:</b> in Beyond20&apos;s options, add{" "}
-          <code style={{ color: "#9fe0ae" }}>https://pc-wrangler.vercel.app/*</code> to Custom Domains and press
+          <code style={{ color: "#9fe0ae" }}>{origin}/*</code> to Custom Domains and press
           Apply, then reload this page. For table-accurate numbers, also enable D&D Beyond digital dice.
         </div>
       )}
