@@ -9,7 +9,7 @@ import { useEffect, useState } from "react";
 const BRASS = "#c8a24b";
 
 export default function TableTapCard({ shareCode }: { shareCode: string }) {
-  const [origin, setOrigin] = useState("https://pc-wrangler.vercel.app");
+  const [origin, setOrigin] = useState("");
   const url = `${origin}/record?share=${shareCode}`;
   const [copied, setCopied] = useState(false);
   const [showSteps, setShowSteps] = useState(false);
