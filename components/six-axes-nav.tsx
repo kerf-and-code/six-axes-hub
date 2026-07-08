@@ -38,6 +38,10 @@ const GROUPS: Group[] = [
     { href: "/gm/dashboard", label: "Dashboard" },
     { href: "/gm/mechanics", label: "Mechanics" },
   ] },
+  { label: "You", href: "/me/characters", children: [
+    { href: "/me/characters", label: "Characters" },
+    { href: "/me/threads", label: "Threads" },
+  ] },
   { label: "Profile", href: "/play" },
   { label: "Help", href: "/gm/help" },
 ];
