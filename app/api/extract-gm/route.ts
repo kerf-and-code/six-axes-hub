@@ -114,24 +114,41 @@ TASK: Tag the clear GM events in this window. For each, return an object:
 Keep summary tight and factual. Only fill location_name/faction_name when a proper name is actually given. Return a JSON array. Return [] if nothing in this window is clearly a GM event.`;
 
   let proposals: Proposal[] = [];
+  let diag: Record<string, unknown> = {};
   try {
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "content-type": "application/json" },
       body: JSON.stringify({ model: MODEL, max_tokens: 3000, system, messages: [{ role: "user", content: prompt }] }),
     });
+    diag.http_status = res.status;
     const data = await res.json();
+    if (!res.ok) {
+      diag.api_error = JSON.stringify(data).slice(0, 500);
+    }
     const text: string = (data?.content || [])
       .filter((bl: { type?: string }) => bl?.type === "text")
       .map((bl: { text?: string }) => bl.text || "")
       .join("")
       .trim();
+    diag.raw_text_len = text.length;
+    diag.raw_text_head = text.slice(0, 200);
     const cleaned = text.replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
-    const parsed = JSON.parse(cleaned);
-    if (Array.isArray(parsed)) proposals = parsed as Proposal[];
-  } catch {
-    // any failure leaves proposals empty; the cursor still advances so we never loop forever
+    try {
+      const parsed = JSON.parse(cleaned);
+      if (Array.isArray(parsed)) proposals = parsed as Proposal[];
+      else diag.parse_note = "parsed but not an array";
+    } catch (pe) {
+      diag.parse_error = (pe as Error).message;
+    }
+  } catch (fe) {
+    diag.fetch_error = (fe as Error).message;
   }
+
+  diag.proposals_returned = proposals.length;
+  diag.kinds_available = kindKeys.size;
+  diag.proposals_after_filter = proposals.filter((p) => p.kind && kindKeys.has(p.kind)).length;
+  diag.rejected_kinds = proposals.filter((p) => p.kind && !kindKeys.has(p.kind)).map((p) => p.kind).slice(0, 10);
 
   const rows = proposals
     .filter((p) => p.kind && kindKeys.has(p.kind))
@@ -170,5 +187,5 @@ Keep summary tight and factual. Only fill location_name/faction_name when a prop
   const status = gmDone && playerDone ? "review" : "extracting";
   await admin.from("capture_jobs").update({ gm_extract_cursor: nextCursor, status }).eq("id", jid);
 
-  return NextResponse.json({ done: gmDone, processed: nextCursor, total, proposed: rows.length });
+  return NextResponse.json({ done: gmDone, processed: nextCursor, total, proposed: rows.length, diag });
 }
