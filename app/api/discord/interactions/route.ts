@@ -303,7 +303,9 @@ async function handleClaimSelect(interaction: Interaction) {
     return updateMessage("Could not save your link. Try again in a moment.");
   }
 
-  return updateMessage(`Linked. You're playing "${character.name}". Recaps and voice will attribute to you.`);
+  await writeBlanketConsent(sb, campaignId, characterId);
+
+  return updateMessage(`Linked. You're playing "${character.name}". This campaign records sessions for recaps and analytics; you're consented for the campaign. You can opt out any time by asking your GM.`);
 }
 
 async function handleClaimModal(interaction: Interaction) {
@@ -342,7 +344,9 @@ async function handleClaimModal(interaction: Interaction) {
     return ephemeral("Could not add your character. Ask your GM to add you to the roster.");
   }
 
-  return ephemeral(`Added and linked. You're playing "${created.name}". Recaps and voice will attribute to you.`);
+  await writeBlanketConsent(sb, campaignId, created.id);
+
+  return ephemeral(`Added and linked. You're playing "${created.name}". This campaign records sessions for recaps and analytics; you're consented for the campaign. You can opt out any time by asking your GM.`);
 }
 
 async function handleUnclaim(interaction: Interaction) {
@@ -675,18 +679,11 @@ async function handleRecord(interaction: Interaction) {
         {
           title: `Recording ${heading} \u2014 ${campaign.name}`.slice(0, 256),
           description:
-            "Six Axes will capture each speaker's audio to help your GM build recaps and table analytics. " +
-            "Tap **I consent** to log your agreement to be recorded. If you don't consent, please leave the voice " +
-            "channel. You can ask your GM to delete the recording at any time.",
+            "Six Axes is capturing each speaker's audio to help your GM build recaps and table analytics. " +
+            "Consent is handled once when you claim your character, so there's nothing to tap here. " +
+            "Anyone opted out is excluded from this recording, and you can ask your GM to change opt-outs " +
+            "or delete recordings at any time.",
           color: BRASS,
-        },
-      ],
-      components: [
-        {
-          type: ACTION_ROW,
-          components: [
-            { type: BUTTON, style: STYLE_SUCCESS, label: "I consent", custom_id: `consent:${sess.id}` },
-          ],
         },
       ],
     },
@@ -724,6 +721,45 @@ async function handleStop(interaction: Interaction) {
     .eq("id", active.id);
 
   return ephemeral("Stopping the recording. The bot will finish up and process the audio.");
+}
+
+// Blanket / standing consent (spec 4a): a NULL-session row keyed on character_id.
+// Explicit exists->update/else insert so the partial unique index on
+// (campaign_id, character_id) WHERE session_id IS NULL is respected.
+async function writeBlanketConsent(
+  sb: ReturnType<typeof serviceClient>,
+  campaignId: string,
+  characterId: string,
+) {
+  const { data: character } = await sb
+    .from("characters")
+    .select("profile_id")
+    .eq("id", characterId)
+    .maybeSingle();
+  const profileId = (character as { profile_id: string | null } | null)?.profile_id ?? null;
+
+  const { data: existing } = await sb
+    .from("recording_consents")
+    .select("id")
+    .eq("campaign_id", campaignId)
+    .eq("character_id", characterId)
+    .is("session_id", null)
+    .maybeSingle();
+
+  if (existing) {
+    await sb.from("recording_consents")
+      .update({ consented: true, method: "discord_claim", profile_id: profileId })
+      .eq("id", (existing as { id: string }).id);
+  } else {
+    await sb.from("recording_consents").insert({
+      campaign_id: campaignId,
+      session_id: null,
+      character_id: characterId,
+      profile_id: profileId,
+      consented: true,
+      method: "discord_claim",
+    });
+  }
 }
 
 async function handleConsentButton(interaction: Interaction) {

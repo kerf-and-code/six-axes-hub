@@ -615,6 +615,7 @@ def main():
     intents = discord.Intents.none()
     intents.guilds = True
     intents.voice_states = True
+    intents.members = True  # required so voice-channel member lists populate (voice location tracking)
     Sidecar(intents=intents).run(TOKEN)
 
 

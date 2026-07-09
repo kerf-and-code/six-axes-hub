@@ -1,5 +1,5 @@
-# Six Axes voice sidecar. Worker app: no inbound HTTP, no health checks.
-app = "six-axes-sidecar"
+# Six Axes HUB voice sidecar. Worker app: no inbound HTTP, no health checks.
+app = "six-axes-hub-sidecar"
 primary_region = "sjc"
 
 [build]

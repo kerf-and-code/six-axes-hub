@@ -40,3 +40,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+schema.sql
+seed.sql
+class_seed.sql
+supabase/.temp/
