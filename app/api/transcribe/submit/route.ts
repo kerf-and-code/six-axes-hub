@@ -32,21 +32,42 @@ export async function POST(req: NextRequest) {
   }
 
   const admin = createAdminClient();
+
+  // Consent enforcement (spec 6.1): exclude opted-out characters' audio before it
+  // ever leaves our system. Opted-out = a per-session row with consented = false.
+  const { data: optRows } = await admin
+    .from("recording_consents")
+    .select("character_id")
+    .eq("session_id", job.session_id)
+    .eq("consented", false);
+  const optedOut = new Set(
+    ((optRows as { character_id: string | null }[]) || [])
+      .map((r) => r.character_id)
+      .filter((id): id is string => !!id),
+  );
+
   const { data: tracks } = await admin
     .from("audio_tracks")
-    .select("id, storage_path, status")
+    .select("id, storage_path, status, character_id")
     .eq("job_id", jobId);
 
-  const todo = ((tracks as { id: string; storage_path: string | null; status: string }[]) || [])
-    .filter((t) => t.storage_path && t.status !== "done");
+  const todo = ((tracks as { id: string; storage_path: string | null; status: string; character_id: string | null }[]) || [])
+    .filter((t) => t.storage_path && t.status !== "done")
+    .filter((t) => !(t.character_id && optedOut.has(t.character_id)));
   if (todo.length === 0) return NextResponse.json({ error: "No tracks to transcribe." }, { status: 409 });
 
   const base = process.env.TRANSCRIBE_CALLBACK_BASE || req.nextUrl.origin;
   let submitted = 0;
+  const failures: string[] = [];
 
   for (const t of todo as { id: string; storage_path: string }[]) {
-    const { data: signed } = await admin.storage.from("session-audio").createSignedUrl(t.storage_path, 7200);
-    if (!signed?.signedUrl) continue;
+    const { data: signed, error: signErr } = await admin.storage
+      .from("session-audio")
+      .createSignedUrl(t.storage_path, 7200);
+    if (!signed?.signedUrl) {
+      failures.push(`track ${t.id}: sign failed (${signErr?.message || "no url"})`);
+      continue;
+    }
 
     const cb = `${base}/api/transcribe/callback?track=${t.id}&k=${encodeURIComponent(secret)}`;
     const params = new URLSearchParams({
@@ -66,12 +87,19 @@ export async function POST(req: NextRequest) {
     if (res.ok) {
       submitted += 1;
       await admin.from("audio_tracks").update({ status: "transcribing" }).eq("id", t.id);
+    } else {
+      const body = await res.text().catch(() => "");
+      failures.push(`track ${t.id}: deepgram ${res.status} ${body.slice(0, 200)}`);
     }
   }
 
   if (submitted === 0) {
-    await admin.from("capture_jobs").update({ status: "error", error: "No tracks could be submitted." }).eq("id", jobId);
-    return NextResponse.json({ error: "No tracks could be submitted to Deepgram." }, { status: 502 });
+    const detail = failures.join(" | ").slice(0, 900) || "unknown";
+    await admin
+      .from("capture_jobs")
+      .update({ status: "error", error: `No tracks submitted: ${detail}` })
+      .eq("id", jobId);
+    return NextResponse.json({ error: "No tracks could be submitted to Deepgram.", detail: failures }, { status: 502 });
   }
 
   await admin.from("capture_jobs").update({ status: "transcribing", error: null }).eq("id", jobId);
