@@ -69,6 +69,7 @@ The **entire capture-to-recap pipeline is live and proven on the hub:**
 6. **Extraction** — `/api/extract-gm` reads GM-track segments, calls Claude, writes `gm_proposed_events`; `/api/extract` does the player equivalent → `proposed_events`. Proven: a test session extracted 23 GM narration events.
 7. **Review** — `/gm/review` shows proposed events (player + GM tabs) with accept/reject and "Accept & create" entity creation.
 8. **Recap** — generates from accepted events (Claude), displays on `/gm/sessions`. **Recap-to-Discord posting just built** (see §4).
+9. **Insight (analytics) surface — built and verified rendering.** `/gm/dashboard`, `/gm/reliability`, `/gm/mechanics`, `/gm/dispositions` all exist and are nav-linked under the "Insight" group. Confirmed live on 2026-07-09: once player `events` exist for a session, `v_session_spotlight` / `v_session_equity` / `v_session_gini` / `v_session_axis_engagement` compute correctly and the Dashboard renders spotlight shares, equity, and the table-health callout. Caveat: it has never been fed real player data (all capture so far is GM-only), and Dispositions (prior/posterior) stay empty pending TPDI priors plus the GCP fit job. See §5.
 
 ---
 
@@ -119,8 +120,12 @@ Order of work (user's stated priority: finish small deferred items, then the dif
 **Immediate / in progress**
 1. ✅/verify: Recap-to-Discord button (§4).
 
-**Next major build — the differentiator**
-2. **Analytics / disposition surface (Insight).** This is the moat and the reason the pipeline exists. Now unblocked because real event data is flowing (`gm_proposed_events`/`events` populate from sessions). Build the player-facing and GM-facing disposition read (prior-vs-posterior across the six axes), spotlight equity, engagement. The pilot has `app/gm/dispositions`, `reliability`, `dashboard`, `mechanics` and the R/Stan Cloud Run job to model on. Needs `GCP_*` env vars for the disposition fit job (not yet set on hub). Reuse the pilot's pattern: definer RPCs, `dispositions` table (source prior|posterior, axis_scores), `disposition_runs`, SQL views (`v_session_equity`, `v_session_spotlight`, `v_session_axis_engagement`, `v_session_gini`).
+**Next major work — feed the differentiator (it is already built)**
+2. **Analytics / disposition surface (Insight) is BUILT and verified, but starved of data.** Correction to the original framing (this was not "the next build"): the hub already ships `app/gm/dispositions`, `reliability`, `dashboard`, `mechanics`, all nav-linked, plus the six `v_session_*` views (now committed in `supabase/migrations/insight-analytics-views.sql`). On 2026-07-09 the Dashboard was confirmed rendering live once player `events` existed. So this is a data problem, not a UI problem. In dependency order:
+   - **Participation views** (spotlight/equity/gini/axis-engagement, feeding Dashboard + Reliability) need accepted **player** `events` tagged with `character_id` and `axis`. The DB currently has ZERO player events: all 6 audio tracks and 77 transcript segments are GM-attributed, so nothing feeds these views (GM narration in `gm_events` does not, by design). The unlock is a real **player-attributed capture session**, then run `/api/extract` and accept via `review_proposed_event`.
+   - **Prior dispositions** need TPDI questionnaire responses (0 submitted).
+   - **Posterior dispositions** additionally need the R/Stan Cloud Run fit job wired: set `GCP_PROJECT_ID/REGION/SA_KEY_B64/DISPOSITION_JOB`, producing `dispositions` (source prior|posterior, axis_scores) and `disposition_runs`. Premature until participation data and priors exist.
+   - A demo seed currently stands in for real player events so the surface can be shown (see §9). Not real capture data.
 3. **Shared recap surface (H2 remainder).** Player-visible "what happened last session" fed by accepted events.
 
 **Cleanup (non-blocking, do when convenient)**
@@ -193,6 +198,8 @@ Cloned from pilot: **37 functions, 6 views, 39 tables, 62 policies** (+ storage/
 - Character "Bobert Gelfling" id `a4423eff-99d7-4840-af66-cd5f76b5ac54` (claimed, blanket consent, attendance present).
 - GM identity id `5c70600f-004b-4d9a-8de1-9dc8734045c6`.
 - Latest capture job `e8ab9884-7fb0-4cd0-92de-eff59606d7de` — transcribed, 23 GM events extracted, in `review`.
+- Second PC in the campaign: "Bobert Gelfling" id `b445806a-f51d-4af1-b16d-700c9144fcb0` (both PCs share the name; Spotlight shows two identical labels).
+- **Demo seed (synthetic, not real capture):** 24 player `events` on Session 1 stamped `payload.seed = 'SEED_DEMO_INSIGHT'`, added 2026-07-09 to make the Insight surface render (spotlight 78/22, cv 0.556, gini 0.278). Remove anytime with: `delete from events where payload->>'seed' = 'SEED_DEMO_INSIGHT';`
 
 ---
 

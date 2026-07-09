@@ -48,3 +48,5 @@ schema.sql
 seed.sql
 class_seed.sql
 supabase/.temp/
+.vercel
+.env*
