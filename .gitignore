@@ -44,3 +44,7 @@ schema.sql
 seed.sql
 class_seed.sql
 supabase/.temp/
+schema.sql
+seed.sql
+class_seed.sql
+supabase/.temp/

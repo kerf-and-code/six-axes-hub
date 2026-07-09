@@ -46,7 +46,10 @@ export default function CapturePage() {
   const [sessions, setSessions] = useState<Sess[]>([]);
   const [sessionId, setSessionId] = useState<string>("");
   const [chars, setChars] = useState<Char[]>([]);
-  const [consents, setConsents] = useState<Record<string, boolean>>({});
+  // Blanket (campaign-wide) standing consent, keyed by character_id.
+  const [blanket, setBlanket] = useState<Record<string, boolean>>({});
+  // Per-session opt-out, keyed by character_id (true = excluded from THIS session).
+  const [optout, setOptout] = useState<Record<string, boolean>>({});
   const [att, setAtt] = useState<Record<string, string>>({});
   const [consentOk, setConsentOk] = useState<boolean>(false);
   const [job, setJob] = useState<Job | null>(null);
@@ -92,20 +95,38 @@ export default function CapturePage() {
     const { data } = await supabase.from("audio_tracks").select("id, character_id, storage_path, status").eq("job_id", jid).order("created_at", { ascending: true });
     setTracks((data as Track[]) || []);
   }
+  // Blanket rows are campaign-scoped (session_id null), so reload them per campaign.
+  async function loadBlanket(cid: string) {
+    const { data } = await supabase
+      .from("recording_consents")
+      .select("character_id, consented")
+      .eq("campaign_id", cid)
+      .is("session_id", null);
+    const map: Record<string, boolean> = {};
+    ((data as { character_id: string | null; consented: boolean }[]) || []).forEach((r) => {
+      if (r.character_id) map[r.character_id] = r.consented;
+    });
+    setBlanket(map);
+  }
 
   useEffect(() => {
-    if (!sessionId) { setConsents({}); setAtt({}); setJob(null); setTracks([]); setConsentOk(false); return; }
+    if (campaignId) loadBlanket(campaignId);
+    else setBlanket({});
+  }, [campaignId, supabase]);
+
+  useEffect(() => {
+    if (!sessionId) { setOptout({}); setAtt({}); setJob(null); setTracks([]); setConsentOk(false); return; }
     let active = true;
     (async () => {
-      const [{ data: cons }, { data: aRows }, { data: jobs }] = await Promise.all([
-        supabase.from("recording_consents").select("character_id, consented").eq("session_id", sessionId),
+      const [{ data: opt }, { data: aRows }, { data: jobs }] = await Promise.all([
+        supabase.from("recording_consents").select("character_id, consented").eq("session_id", sessionId).eq("consented", false),
         supabase.from("attendance").select("character_id, status").eq("session_id", sessionId),
         supabase.from("capture_jobs").select("id, status, source").eq("session_id", sessionId).order("created_at", { ascending: false }).limit(1),
       ]);
       if (!active) return;
-      const cmap: Record<string, boolean> = {};
-      ((cons as { character_id: string | null; consented: boolean }[]) || []).forEach((r) => { if (r.character_id) cmap[r.character_id] = r.consented; });
-      setConsents(cmap);
+      const omap: Record<string, boolean> = {};
+      ((opt as { character_id: string | null; consented: boolean }[]) || []).forEach((r) => { if (r.character_id) omap[r.character_id] = true; });
+      setOptout(omap);
       const amap: Record<string, string> = {};
       ((aRows as { character_id: string | null; status: string }[]) || []).forEach((r) => { if (r.character_id) amap[r.character_id] = r.status; });
       setAtt(amap);
@@ -117,13 +138,23 @@ export default function CapturePage() {
     return () => { active = false; };
   }, [sessionId, supabase]);
 
-  async function toggleConsent(charId: string, value: boolean) {
+  // GM toggles a per-session opt-out. ON => write a session opt-out row (consented=false).
+  // OFF => delete that opt-out row. Standing consent is untouched either way.
+  async function toggleOptout(charId: string, value: boolean) {
     if (!sessionId || !campaignId) return;
-    setConsents((p) => ({ ...p, [charId]: value }));
-    await supabase.from("recording_consents").upsert(
-      { session_id: sessionId, campaign_id: campaignId, character_id: charId, consented: value, method: "verbal_at_table" },
-      { onConflict: "session_id,character_id" },
-    );
+    setOptout((p) => ({ ...p, [charId]: value }));
+    if (value) {
+      await supabase.from("recording_consents").upsert(
+        { session_id: sessionId, campaign_id: campaignId, character_id: charId, consented: false, method: "gm_optout" },
+        { onConflict: "session_id,character_id" },
+      );
+    } else {
+      await supabase.from("recording_consents")
+        .delete()
+        .eq("session_id", sessionId)
+        .eq("character_id", charId)
+        .eq("consented", false);
+    }
     loadGate(sessionId);
   }
 
@@ -191,7 +222,8 @@ export default function CapturePage() {
   }
 
   const presentChars = chars.filter((c) => PRESENT.includes(att[c.id] || ""));
-  const missing = presentChars.filter((c) => !consents[c.id]);
+  // A present character blocks the gate if they are neither standing-consented nor opted out.
+  const missing = presentChars.filter((c) => !blanket[c.id] && !optout[c.id]);
 
   const trackChars = new Set(tracks.map((t) => t.character_id));
   const isDraft = !job || job.status === "draft";
@@ -203,7 +235,7 @@ export default function CapturePage() {
     <PageShell width={860}>
       <h1 style={{ ...ui.h1, fontSize: 28, margin: "4px 0 4px" }}>Capture</h1>
       <p style={{ color: C.muted, fontSize: 14, margin: "0 0 20px" }}>
-        Record consent, upload one audio track per player, and queue the session for transcription. Nothing is processed until consent is on file.
+        Upload one audio track per player and queue the session for transcription. Players consent when they claim their character; here you exclude anyone who opted out. Nothing is processed until the gate clears.
       </p>
 
         {/* campaign + session */}
@@ -227,37 +259,48 @@ export default function CapturePage() {
 
         {selectedSession && (
           <>
-            {/* consent */}
+            {/* consent: standing badges + per-session opt-out */}
             <div style={box}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 4 }}>
-                <div style={{ fontSize: 16, fontWeight: 700 }}>Consent to record</div>
+                <div style={{ fontSize: 16, fontWeight: 700 }}>Recording consent</div>
                 <span style={{ fontSize: 12, fontWeight: 700, color: consentOk ? C.good : C.warn, fontFamily: "ui-monospace, monospace", letterSpacing: "0.04em" }}>
-                  {consentOk ? "CONSENT ON FILE" : "NOT CLEARED"}
+                  {consentOk ? "GATE CLEAR" : "NOT CLEARED"}
                 </span>
               </div>
               <div style={{ color: C.muted, fontSize: 13, marginBottom: 14 }}>
-                Check each player who gave verbal consent at the table. The gate clears once every present player is checked.
+                Players consent once when they claim their character. Flip a switch to exclude that player from this session; their audio is dropped and never transcribed.
               </div>
               {chars.length === 0 && <p style={{ color: C.muted, fontSize: 13 }}>No player characters in the roster yet.</p>}
               <div style={{ display: "grid", gap: 8 }}>
                 {chars.map((ch) => {
                   const present = PRESENT.includes(att[ch.id] || "");
-                  const on = Boolean(consents[ch.id]);
+                  const consented = Boolean(blanket[ch.id]);
+                  const excluded = Boolean(optout[ch.id]);
                   return (
-                    <label key={ch.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", background: C.surface2, border: `1px solid ${on ? C.good : C.line}`, borderRadius: 10, cursor: "pointer" }}>
-                      <input type="checkbox" checked={on} onChange={(e) => toggleConsent(ch.id, e.target.checked)}
-                        style={{ width: 18, height: 18, accentColor: C.good, cursor: "pointer" }} />
-                      <span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>{ch.name}{ch.class ? <span style={{ color: C.muted, fontWeight: 400 }}> · {ch.class}</span> : null}</span>
+                    <div key={ch.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", background: C.surface2, border: `1px solid ${excluded ? C.warn : consented ? C.good : C.line}`, borderRadius: 10 }}>
+                      <span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>
+                        {ch.name}{ch.class ? <span style={{ color: C.muted, fontWeight: 400 }}> · {ch.class}</span> : null}
+                      </span>
                       {present && <span style={{ fontSize: 11, color: C.plum, fontFamily: "ui-monospace, monospace" }}>PRESENT</span>}
-                    </label>
+                      <span style={{ fontSize: 11, fontFamily: "ui-monospace, monospace", letterSpacing: "0.04em", color: consented ? C.good : C.muted }}>
+                        {consented ? "CONSENTED" : "NO CONSENT"}
+                      </span>
+                      <label style={{ display: "flex", alignItems: "center", gap: 7, cursor: "pointer", fontSize: 12, color: excluded ? C.warn : C.muted }}>
+                        <input type="checkbox" checked={excluded} onChange={(e) => toggleOptout(ch.id, e.target.checked)}
+                          style={{ width: 16, height: 16, accentColor: C.warn, cursor: "pointer" }} />
+                        opt out
+                      </label>
+                    </div>
                   );
                 })}
               </div>
               {!consentOk && presentChars.length > 0 && missing.length > 0 && (
-                <p style={{ color: C.warn, fontSize: 12.5, marginTop: 12 }}>Waiting on: {missing.map((c) => c.name).join(", ")}.</p>
+                <p style={{ color: C.warn, fontSize: 12.5, marginTop: 12 }}>
+                  Blocked by: {missing.map((c) => c.name).join(", ")}. Each needs standing consent (claim their character) or a session opt-out.
+                </p>
               )}
               {!consentOk && presentChars.length === 0 && (
-                <p style={{ color: C.muted, fontSize: 12.5, marginTop: 12 }}>Mark attendance on the Check-in page so the gate knows who needs to consent.</p>
+                <p style={{ color: C.muted, fontSize: 12.5, marginTop: 12 }}>Mark attendance on the Check-in page so the gate knows who needs to be consented or excluded.</p>
               )}
             </div>
 
@@ -300,7 +343,7 @@ export default function CapturePage() {
                             </div>
                           ) : isDraft ? (
                             <label style={{ ...btn(busy ? C.line : C.plum, SAX.inkDeep), opacity: busy ? 0.7 : 1, display: "inline-block" }}>
-                              {busy ? "Uploading…" : "Upload track"}
+                              {busy ? "Uploading\u2026" : "Upload track"}
                               <input type="file" accept="audio/*" disabled={busy} style={{ display: "none" }}
                                 onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadTrack(ch.id, f); e.currentTarget.value = ""; }} />
                             </label>
@@ -319,9 +362,9 @@ export default function CapturePage() {
                       <>
                         <button type="button" onClick={submitJob} disabled={!consentOk || tracks.length === 0 || queuing}
                           style={{ ...btn(C.good, SAX.inkDeep), opacity: !consentOk || tracks.length === 0 || queuing ? 0.5 : 1, cursor: !consentOk || tracks.length === 0 ? "not-allowed" : "pointer" }}>
-                          {queuing ? "Queuing…" : "Queue for transcription"}
+                          {queuing ? "Queuing\u2026" : "Queue for transcription"}
                         </button>
-                        {!consentOk && <span style={{ fontSize: 12, color: C.warn }}>Consent not cleared yet.</span>}
+                        {!consentOk && <span style={{ fontSize: 12, color: C.warn }}>Gate not cleared yet.</span>}
                         {consentOk && tracks.length === 0 && <span style={{ fontSize: 12, color: C.muted }}>Upload at least one track.</span>}
                       </>
                     ) : (
